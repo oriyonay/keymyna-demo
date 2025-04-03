@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='UTF-8' />
+  <meta name='viewport' content='width=device-width, initial-scale=1.0' />
+  <title>Audiochef Lab - Key Detection</title>
+  <!-- Google Font for modern look -->
+  <link href='https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap' rel='stylesheet'>
+  <!-- React and Babel -->
+  <script src='https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js'></script>
+  <script src='https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js'></script>
+  <script src='https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.22.6/babel.min.js'></script>
+  <!-- onnxruntime-web -->
+  <script src='https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js'></script>
+  <style>
+    body {
+      font-family: 'Montserrat', sans-serif;
+      background: #f4f4f4;
+      margin: 0;
+      padding: 0;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      padding: 5px 20px;
+      background: #fff;
+      box-shadow: 0px 2px 5px rgba(0, 0, 0, 0.1);
+      margin-bottom: 20px;
+    }
+    header img {
+      height: 40px;
+      margin-right: 15px;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 20px;
+      color: #333;
+    }
+    .container {
+      text-align: center;
+      padding: 0 20px 20px;
+    }
+    .title-section {
+      margin-bottom: 30px;
+    }
+    .title-section h2 {
+      font-size: 32px;
+      color: #333;
+      margin-bottom: 10px;
+    }
+    .title-section p {
+      font-size: 18px;
+      color: #666;
+      margin: 0;
+    }
+    .upload-box {
+      width: 60%;
+      max-width: 500px;
+      margin: 10px auto;
+      padding: 30px;
+      border: 2px dashed #666;
+      border-radius: 10px;
+      background: white;
+      cursor: pointer;
+      transition: background 0.3s, border-color 0.3s;
+    }
+    .upload-box.active {
+      border-color: #007bff;
+      background: #e6f7ff;
+    }
+    input[type='file'] {
+      display: none;
+    }
+    button {
+      padding: 10px 15px;
+      font-size: 16px;
+      cursor: pointer;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      margin-top: 10px;
+    }
+    button:disabled {
+      background: #999;
+    }
+    table {
+      width: 80%;
+      max-width: 800px;
+      margin: 20px auto;
+      border-collapse: separate;
+      border-spacing: 0;
+      background: white;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    }
+    th, td {
+      padding: 10px;
+      border-bottom: 1px solid #ddd;
+      text-align: center;
+    }
+    th {
+      background: #333;
+      color: white;
+    }
+    tr:last-child td {
+      border-bottom: none;
+    }
+    .audio-player {
+      width: 100%;
+      max-width: 300px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <img src='logo.png' alt='Audiochef Logo' />
+    <h1>Audiochef Lab</h1>
+  </header>
+  <div class='container'>
+    <div class='title-section'>
+      <h2>Key Detection</h2>
+      <p>Upload your audio files to automatically detect their musical key</p>
+    </div>
+    <div id='root'></div>
+  </div>
+  <script type='text/babel'>
+    const KEYS = [
+      'C major', 'C minor', 'Db major', 'Db minor', 'D major', 'D minor',
+      'Eb major', 'Eb minor', 'E major', 'E minor', 'F major', 'F minor',
+      'Gb major', 'Gb minor', 'G major', 'G minor', 'Ab major', 'Ab minor',
+      'A major', 'A minor', 'Bb major', 'Bb minor', 'B major', 'B minor'
+    ];
+
+    function App() {
+      const [session, setSession] = React.useState(null);
+      const [loadingModel, setLoadingModel] = React.useState(true);
+      const [modelProgress, setModelProgress] = React.useState(0);
+      const [results, setResults] = React.useState([]);
+      const [dragActive, setDragActive] = React.useState(false);
+      const fileInputRef = React.useRef(null);
+
+      // Load the ONNX model from URL with progress events
+      React.useEffect(() => {
+        const modelUrl = 'https://huggingface.co/oriyonay/key-detection-v1/resolve/main/keymyna-bb.onnx';
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', modelUrl, true);
+        xhr.responseType = 'arraybuffer';
+        xhr.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const percentComplete = (event.loaded / event.total) * 100;
+            setModelProgress(percentComplete);
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            const arrayBuffer = xhr.response;
+            ort.InferenceSession.create(arrayBuffer)
+              .then((sess) => {
+                setSession(sess);
+                setLoadingModel(false);
+              })
+              .catch((err) => {
+                console.error('Failed to create session', err);
+                setLoadingModel(false);
+              });
+          } else {
+            console.error('Failed to load model file');
+            setLoadingModel(false);
+          }
+        };
+        xhr.onerror = () => {
+          console.error('Error while loading model');
+          setLoadingModel(false);
+        };
+        xhr.send();
+      }, []);
+
+      // Process files: add file immediately as "Processing" then run inference and update results
+      const handleFiles = async (files) => {
+        if (!session) return;
+        for (const file of files) {
+          const id = file.name + '-' + Date.now() + '-' + Math.random();
+          // Immediately add the file with "Processing" status.
+          const newResult = {
+            id: id,
+            fileName: file.name,
+            predictedKey: 'Processing',
+            predictionConfidence: null,
+            audioURL: URL.createObjectURL(file)
+          };
+          setResults(prev => [...prev, newResult]);
+
+          try {
+            const waveform = await getAudioData(file);
+            // Create tensor of shape [1, waveform_length]
+            const tensor = new ort.Tensor('float32', waveform, [1, waveform.length]);
+            const outputMap = await session.run({ 'waveform': tensor });
+            const probs = outputMap['probs'].data;
+            // Determine the predicted key index (argmax)
+            let maxIndex = 0;
+            for (let i = 1; i < probs.length; i++) {
+              if (probs[i] > probs[maxIndex]) {
+                maxIndex = i;
+              }
+            }
+            const predictedKey = KEYS[maxIndex];
+            const predictionConfidence = (probs[maxIndex] * 100).toFixed(1) + '%';
+            // Update the result row with the computed values.
+            setResults(prev => prev.map(r => r.id === id ? { ...r, predictedKey, predictionConfidence } : r));
+          } catch (err) {
+            console.error('Error processing file', file.name, err);
+            setResults(prev => prev.map(r => r.id === id ? { ...r, predictedKey: 'Error', predictionConfidence: 'N/A' } : r));
+          }
+        }
+      };
+
+      // Handlers for drag and drop
+      const handleDrop = (e) => {
+        e.preventDefault();
+        setDragActive(false);
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          handleFiles(e.dataTransfer.files);
+          e.dataTransfer.clearData();
+        }
+      };
+
+      const handleDragOver = (e) => {
+        e.preventDefault();
+        setDragActive(true);
+      };
+
+      const handleDragLeave = (e) => {
+        e.preventDefault();
+        setDragActive(false);
+      };
+
+      const handleButtonClick = () => {
+        fileInputRef.current.click();
+      };
+
+      const handleFileChange = (e) => {
+        if (e.target.files && e.target.files.length > 0) {
+          handleFiles(e.target.files);
+        }
+      };
+
+      return (
+        <div>
+          {loadingModel ? (
+            <div>
+              <p>Loading model... {modelProgress.toFixed(0)}%</p>
+              <div style={{ width: '80%', maxWidth: '400px', height: '20px', margin: 'auto', background: '#ddd', borderRadius: '10px' }}>
+                <div style={{ width: modelProgress + '%', height: '100%', background: '#007bff', borderRadius: '10px' }}></div>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div
+                className={'upload-box' + (dragActive ? ' active' : '')}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                onClick={handleButtonClick}
+              >
+                <p>Drag and drop audio files here or click to select</p>
+                <input
+                  type='file'
+                  accept='audio/*'
+                  multiple
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                />
+              </div>
+              {results.length > 0 && (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Audio</th>
+                      <th>Predicted Key</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {results.map((result) => (
+                      <tr key={result.id}>
+                        <td>
+                          <audio controls className='audio-player'>
+                            <source src={result.audioURL} type='audio/mpeg' />
+                            Your browser does not support the audio element.
+                          </audio>
+                        </td>
+                        <td>
+                          {result.predictedKey === 'Processing'
+                            ? 'Processing'
+                            : `${result.predictedKey} (${result.predictionConfidence})`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Function to decode audio file and resample it to 16 kHz
+    async function getAudioData(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = async () => {
+          try {
+            const arrayBuffer = reader.result;
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            const audioCtx = new AudioContext();
+            audioCtx.decodeAudioData(
+              arrayBuffer,
+              async (audioBuffer) => {
+                // Convert to mono if necessary
+                let channelData;
+                if (audioBuffer.numberOfChannels > 1) {
+                  const channels = [];
+                  for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
+                    channels.push(audioBuffer.getChannelData(i));
+                  }
+                  channelData = channels[0].map((_, i) => {
+                    let sum = 0;
+                    for (let j = 0; j < channels.length; j++) {
+                      sum += channels[j][i];
+                    }
+                    return sum / channels.length;
+                  });
+                } else {
+                  channelData = audioBuffer.getChannelData(0);
+                }
+                // Resample if needed
+                if (audioBuffer.sampleRate !== 16000) {
+                  const duration = audioBuffer.duration;
+                  const offlineCtx = new OfflineAudioContext(1, Math.ceil(duration * 16000), 16000);
+                  const bufferSource = offlineCtx.createBufferSource();
+                  bufferSource.buffer = audioBuffer;
+                  bufferSource.connect(offlineCtx.destination);
+                  bufferSource.start(0);
+                  const renderedBuffer = await offlineCtx.startRendering();
+                  channelData = renderedBuffer.getChannelData(0);
+                }
+                resolve(new Float32Array(channelData));
+              },
+              (error) => {
+                reject(error);
+              }
+            );
+          } catch (err) {
+            reject(err);
+          }
+        };
+        reader.onerror = reject;
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
